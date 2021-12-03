@@ -1,20 +1,20 @@
-use bdk::bitcoin::Network;
 use bdk::bitcoin::secp256k1::Secp256k1;
 use bdk::bitcoin::util::bip32::{DerivationPath, KeySource};
 use bdk::bitcoin::Amount;
+use bdk::bitcoin::Network;
 use bdk::bitcoincore_rpc::{Auth as rpc_auth, Client, RpcApi};
 
-use bdk::blockchain::rpc::{Auth, RpcBlockchain, RpcConfig, wallet_name_from_descriptor};
+use bdk::blockchain::rpc::{Auth, RpcBlockchain, RpcConfig};
 use bdk::blockchain::{ConfigurableBlockchain, NoopProgress};
 
-use bdk::keys::bip39::{Mnemonic, Language, MnemonicType};
-use bdk::keys::{GeneratedKey, GeneratableKey, ExtendedKey, DerivableKey, DescriptorKey};
+use bdk::keys::bip39::{Language, Mnemonic, WordCount};
 use bdk::keys::DescriptorKey::Secret;
+use bdk::keys::{DerivableKey, DescriptorKey, ExtendedKey, GeneratableKey, GeneratedKey};
 
 use bdk::miniscript::miniscript::Segwitv0;
 
+use bdk::wallet::{signer::SignOptions, wallet_name_from_descriptor, AddressIndex};
 use bdk::Wallet;
-use bdk::wallet::{AddressIndex, signer::SignOptions};
 
 use bdk::sled;
 
@@ -22,31 +22,29 @@ use std::str::FromStr;
 
 fn main() {
     // Create a RPC interface
-    let rpc_auth = rpc_auth::UserPass(
-        "admin".to_string(),
-        "password".to_string()
-    ); 
-    let core_rpc = Client::new("http://127.0.0.1:18443/wallet/test".to_string(), rpc_auth).unwrap();
+    let rpc_auth = rpc_auth::UserPass("admin".to_string(), "passw".to_string());
+    let core_rpc = Client::new("http://127.0.0.1:18443/wallet/test", rpc_auth).unwrap();
 
-    // Create the test wallet 
-    core_rpc.create_wallet("test", None, None, None, None).unwrap();
-    
+    // Create the test wallet
+    let _ = core_rpc.create_wallet("test", None, None, None, None);
+
     // Get a new address
     let core_address = core_rpc.get_new_address(None, None).unwrap();
-    
+
     // Generate 101 blocks and use the above address as coinbase
     core_rpc.generate_to_address(101, &core_address).unwrap();
 
     // Get receive and change descriptor
     let (receive_desc, change_desc) = get_descriptors();
-    
+
     // Use deterministic wallet name derived from descriptor
     let wallet_name = wallet_name_from_descriptor(
         &receive_desc,
         Some(&change_desc),
         Network::Regtest,
-        &Secp256k1::new()
-    ).unwrap();
+        &Secp256k1::new(),
+    )
+    .unwrap();
 
     // Create the datadir to store wallet data
     let mut datadir = dirs_next::home_dir().unwrap();
@@ -57,7 +55,7 @@ fn main() {
     // Set RPC username and password
     let auth = Auth::UserPass {
         username: "admin".to_string(),
-        password: "password".to_string()
+        password: "passw".to_string(),
     };
 
     // Set RPC url
@@ -68,6 +66,8 @@ fn main() {
     let rpc_config = RpcConfig {
         url: rpc_url,
         auth,
+        proxy: Some("127.0.0.1:9050".to_string()),
+        proxy_auth: None,
         network: Network::Regtest,
         wallet_name,
         skip_blocks: None,
@@ -77,7 +77,14 @@ fn main() {
     let blockchain = RpcBlockchain::from_config(&rpc_config).unwrap();
 
     // Combine everything and finally create the BDK wallet structure
-    let wallet = Wallet::new(&receive_desc, Some(&change_desc), Network::Regtest, db_tree, blockchain).unwrap();
+    let wallet = Wallet::new(
+        &receive_desc,
+        Some(&change_desc),
+        Network::Regtest,
+        db_tree,
+        blockchain,
+    )
+    .unwrap();
 
     // Sync the wallet
     wallet.sync(NoopProgress, None).unwrap();
@@ -86,7 +93,18 @@ fn main() {
     let address = wallet.get_address(AddressIndex::New).unwrap().address;
 
     // Send 10 BTC from Core to BDK
-    core_rpc.send_to_address(&address, Amount::from_btc(10.0).unwrap(), None, None, None, None, None, None).unwrap();
+    core_rpc
+        .send_to_address(
+            &address,
+            Amount::from_btc(10.0).unwrap(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
     // Confirm transaction by generating some blocks
     core_rpc.generate_to_address(1, &core_address).unwrap();
@@ -98,7 +116,7 @@ fn main() {
     let mut tx_builder = wallet.build_tx();
 
     // Set recipient of the transaction
-    tx_builder.set_recipients(vec!((core_address.script_pubkey(), 500000000)));
+    tx_builder.set_recipients(vec![(core_address.script_pubkey(), 500000000)]);
 
     // Finalise the transaction and extract PSBT
     let (mut psbt, _) = tx_builder.finish().unwrap();
@@ -116,7 +134,7 @@ fn main() {
     let tx = psbt.extract_tx();
 
     // Broadcast the transaction
-    wallet.broadcast(tx).unwrap();
+    wallet.broadcast(&tx).unwrap();
 
     // Confirm transaction by generating some blocks
     core_rpc.generate_to_address(1, &core_address).unwrap();
@@ -131,7 +149,7 @@ fn main() {
     println!("BDK wallet balance: {:#?}", bdk_balance);
 }
 
-// generate fresh descriptor strings and return them via (receive, change) tupple 
+// generate fresh descriptor strings and return them via (receive, change) tupple
 fn get_descriptors() -> (String, String) {
     // Create a new secp context
     let secp = Secp256k1::new();
@@ -141,7 +159,7 @@ fn get_descriptors() -> (String, String) {
 
     // Generate a fresh menmonic, and from their, a fresh private key xprv
     let mnemonic: GeneratedKey<_, Segwitv0> =
-                Mnemonic::generate((MnemonicType::Words12, Language::English)).unwrap();
+        Mnemonic::generate((WordCount::Words12, Language::English)).unwrap();
     let mnemonic = mnemonic.into_key();
     let xkey: ExtendedKey = (mnemonic, password).into_extended_key().unwrap();
     let xprv = xkey.into_xprv(Network::Regtest).unwrap();
@@ -149,15 +167,16 @@ fn get_descriptors() -> (String, String) {
     // Derive our dewscriptors to use
     // We use the following paths for recieve and change descriptor
     // recieve: "m/84h/1h/0h/0"
-    // change: "m/84h/1h/0h/1" 
+    // change: "m/84h/1h/0h/1"
     let mut keys = Vec::new();
 
     for path in ["m/84h/1h/0h/0", "m/84h/1h/0h/1"] {
         let deriv_path: DerivationPath = DerivationPath::from_str(path).unwrap();
         let derived_xprv = &xprv.derive_priv(&secp, &deriv_path).unwrap();
         let origin: KeySource = (xprv.fingerprint(&secp), deriv_path);
-        let derived_xprv_desc_key: DescriptorKey<Segwitv0> =
-        derived_xprv.into_descriptor_key(Some(origin), DerivationPath::default()).unwrap();
+        let derived_xprv_desc_key: DescriptorKey<Segwitv0> = derived_xprv
+            .into_descriptor_key(Some(origin), DerivationPath::default())
+            .unwrap();
 
         // Wrap the derived key with the wpkh() string to produce a descriptor string
         if let Secret(key, _, _) = derived_xprv_desc_key {
@@ -167,7 +186,7 @@ fn get_descriptors() -> (String, String) {
             keys.push(desc);
         }
     }
-    
+
     // Return the keys as a tupple
     (keys[0].clone(), keys[1].clone())
 }
