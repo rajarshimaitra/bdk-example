@@ -6,5 +6,5 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bdk = { path = "/home/raj/github-repo/bdk", default-features = false, features = ["all-keys", "key-value-db", "rpc"]}
+bdk = { path = "/home/raj/github-repo/bdk", default-features = false, features = ["all-keys", "key-value-db", "rpc", "verify"]}
 dirs-next = "2.0"
